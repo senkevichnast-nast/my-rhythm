@@ -24,8 +24,8 @@ begin
   insert into public.planner_state(user_id,revision,data) values(owner_id,0,'{}'::jsonb)
     on conflict(user_id) do nothing;
   select * into current_row from public.planner_state where user_id=owner_id for update;
-  if coalesce((current_row.data->>'schemaVersion')::integer,1) >= 2
-     and coalesce((new_data->>'schemaVersion')::integer,1) < 2 then
+  if coalesce((new_data->>'schemaVersion')::integer,1) <
+     coalesce((current_row.data->>'schemaVersion')::integer,1) then
     raise exception 'Please reload the planner to use the latest version' using errcode='22023';
   end if;
   if current_row.revision <> expected_revision then
