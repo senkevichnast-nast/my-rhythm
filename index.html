@@ -339,12 +339,18 @@ async function cloudFetch(path,options={},authenticated=true){const headers={'ap
 async function cloudRefresh(){if(!cloud.session||cloud.session.expires_at>Date.now()/1000+60)return;if(cloud.refresh)return cloud.refresh;const refresh=async()=>{const cached=JSON.parse(localStorage.getItem(SESSION_KEY)||'null');if(cached?.user?.id===cloud.session?.user?.id&&cached.expires_at>Date.now()/1000+60){cloud.session=cached;return}try{const value=await cloudFetch('/auth/v1/token?grant_type=refresh_token',{method:'POST',body:JSON.stringify({refresh_token:cloud.session.refresh_token})},false);cloudSessionSave(value)}catch(e){if(e.status===400||e.status===401){cloud.session=null;cloud.ready=false;localStorage.removeItem(SESSION_KEY);showCloudGate('Нужно подтвердить вход ещё раз. Локальные записи сохранены.')}throw e}};cloud.refresh=(navigator.locks?navigator.locks.request('my-rhythm-auth-refresh',refresh):refresh()).finally(()=>cloud.refresh=null);return cloud.refresh}
 function cloudApply(value){const timer=state.timer;state=validate(value);state.timer=timer;cloudPersist();render();cloudStatus(cloud.status)}
 function cloudIsEditing(){return !!$('#modal')?.open||document.activeElement?.matches('input,textarea,select,[contenteditable="true"]')}
+function cloudReceive(value,revision){
+  const remote=cloudSnapshot(validate(value));let merged;
+  try{merged=validate(mergePlanner(cloud.base,cloudSnapshot(),remote))}
+  catch{cloud.conflict={remote,revision};cloudStatus('Есть изменения на двух устройствах');cloudConflictDialog();return false}
+  cloud.base=remote;cloud.revision=revision;state={...merged,timer:state.timer};cloud.dirty=!equalJSON(cloudSnapshot(),remote);cloudPersist();if(!cloudIsEditing())render();return true;
+}
 async function cloudSync(){if(!cloud.enabled||!cloud.ready||cloud.busy||cloud.conflict||!cloud.session)return;cloud.busy=true;try{
   if(cloud.dirty){const sent=cloudSnapshot(),revision=cloud.revision,result=await cloudFetch('/rest/v1/rpc/save_planner',{method:'POST',body:JSON.stringify({expected_revision:revision,new_data:sent})});
-    if(result.conflict){const remote=validate(result.data);try{const merged=mergePlanner(cloud.base,sent,cloudSnapshot(remote));cloud.base=cloudSnapshot(remote);cloud.revision=result.revision;const live=cloudSnapshot();const withLive=mergePlanner(sent,live,merged);state={...validate(withLive),timer:state.timer};cloud.dirty=!equalJSON(cloudSnapshot(),cloud.base);cloudPersist();if(!cloudIsEditing())render()}catch{cloud.conflict={remote:cloudSnapshot(remote),revision:result.revision};cloudStatus('Есть изменения на двух устройствах');cloudConflictDialog();return}}
+    if(result.conflict){if(!cloudReceive(result.data,result.revision))return}
     else{cloud.base=sent;cloud.revision=result.revision;cloud.dirty=!equalJSON(cloudSnapshot(),sent);cloudPersist()}
   }else if(!cloudIsEditing()){
-    const rows=await cloudFetch('/rest/v1/planner_state?select=data,revision&user_id=eq.'+encodeURIComponent(cloud.session.user.id));const row=rows[0];if(row&&row.revision!==cloud.revision){const remote=cloudSnapshot(validate(row.data));cloud.base=remote;cloud.revision=row.revision;cloudApply(remote)}
+    const rows=await cloudFetch('/rest/v1/planner_state?select=data,revision&user_id=eq.'+encodeURIComponent(cloud.session.user.id));const row=rows[0];if(row&&row.revision!==cloud.revision&&!cloudReceive(row.data,row.revision))return;
   }
   cloudStatus(cloud.dirty?'Сохранено здесь · синхронизирую…':'Синхронизировано');
 }catch(e){cloudStatus(navigator.onLine?'Сохранено здесь · связь прервана':'Офлайн · сохранено на устройстве')}finally{cloud.busy=false;if(cloud.dirty&&!cloud.conflict){clearTimeout(cloud.queue);cloud.queue=setTimeout(()=>cloudSync(),4000)}}}
@@ -438,7 +444,7 @@ if(a==='clear-health'){confirmAction('Очистить запись здоров
 if(a==='project-task'){const p=state.projects.find(p=>p.id===id);editRecord('tasks','',{title:p.next||p.title,section:'personal',date:today(),notes:p.title});return}
 }catch(error){toast('Не получилось: '+error.message)}});
 $('#modal').addEventListener('click',e=>{if(e.target===$('#modal')){const r=e.target.getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)e.target.close()}});
-window.addEventListener('storage',e=>{if(e.key!==STORE||!e.newValue)return;try{state=validate(JSON.parse(e.newValue));render();toast('Данные обновлены из другой вкладки')}catch{toast('Не удалось прочитать изменения из другой вкладки')}});
+window.addEventListener('storage',e=>{if(cloud.enabled||e.key!==STORE||!e.newValue)return;try{state=validate(JSON.parse(e.newValue));render();toast('Данные обновлены из другой вкладки')}catch{toast('Не удалось прочитать изменения из другой вкладки')}});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)paintTimer()});
 setInterval(()=>{paintTimer();if(lastDate!==today()){const old=lastDate;lastDate=today();if(selectedDate===old)selectedDate=today();render()}},1000);
 try{const raw=localStorage.getItem(STORE);if(raw)state=validate(JSON.parse(raw))}catch(e){storageProblem='Не удалось прочитать сохранение. Исходные данные не перезаписаны. Можно импортировать резервную копию или экспортировать текущую.';writeBlocked=true}
